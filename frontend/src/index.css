@@ -1,0 +1,159 @@
+/* Font Imports via Fontsource */
+@import "@fontsource/geist/400.css";
+@import "@fontsource/geist/500.css";
+@import "@fontsource/geist/600.css";
+@import "@fontsource/geist/700.css";
+
+@import "@fontsource/geist-mono/400.css";
+@import "@fontsource/geist-mono/500.css";
+@import "@fontsource/geist-mono/600.css";
+
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  /* Core Neutrals & Surfaces (Light Mode) */
+  --ink: #0F172A;
+  --paper: #F8F9FA;
+  --surface: #FFFFFF;
+  --surface-elevated: #FFFFFF;
+  --subtle: #F1F3F5;
+  --muted: #64748B;
+  --line: #E2E8F0;
+  --line-strong: #CBD5E1;
+
+  /* Brand Accents */
+  --brand: #2563EB;
+  --brand-hover: #1D4ED8;
+  --brand-light: #EFF6FF;
+  --brand-contrast: #FFFFFF;
+
+  /* Semantic Status Colors */
+  --status-pending: #64748B;
+  --status-reviewed: #2563EB;
+  --status-assigned: #D97706;
+  --status-progress: #EA580C;
+  --status-resolved: #16A34A;
+
+  /* Semantic Priority Colors */
+  --priority-low: #16A34A;
+  --priority-medium: #D97706;
+  --priority-high: #EA580C;
+  --priority-critical: #DC2626;
+}
+
+.dark {
+  /* Dark Mode Neutrals & Surfaces (Near-Black Base + Very Dark Charcoal Surfaces + White Contrast) */
+  --ink: #F8FAFC;
+  --paper: #090B0E;
+  --surface: #12151C;
+  --surface-elevated: #181C26;
+  --subtle: #171B24;
+  --muted: #94A3B8;
+  --line: #202532;
+  --line-strong: #2D3546;
+
+  /* Brand Accents in Dark Mode */
+  --brand: #3B82F6;
+  --brand-hover: #60A5FA;
+  --brand-light: #1E293B;
+  --brand-contrast: #FFFFFF;
+
+  /* Semantic Status Colors in Dark Mode (High contrast against dark charcoal) */
+  --status-pending: #94A3B8;
+  --status-reviewed: #60A5FA;
+  --status-assigned: #FBBF24;
+  --status-progress: #FB923C;
+  --status-resolved: #34D399;
+
+  /* Semantic Priority Colors in Dark Mode */
+  --priority-low: #34D399;
+  --priority-medium: #FBBF24;
+  --priority-high: #FB923C;
+  --priority-critical: #F87171;
+}
+
+/* Base resets & typography */
+html {
+  scroll-behavior: smooth;
+  font-family: 'Plus Jakarta Sans', 'Geist', system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+  background-color: var(--paper);
+  color: var(--ink);
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+body {
+  margin: 0;
+  padding: 0;
+  background-color: var(--paper);
+  color: var(--ink);
+  min-height: 100vh;
+  line-height: 1.5;
+}
+
+/* Typographic hierarchy scale */
+h1, h2, h3, h4, h5, h6 {
+  color: var(--ink);
+  font-weight: 600;
+  letter-spacing: -0.02em;
+}
+
+/* Selection highlight */
+::selection {
+  background-color: rgba(37, 99, 235, 0.2);
+  color: var(--ink);
+}
+
+.dark ::selection {
+  background-color: rgba(59, 130, 246, 0.3);
+  color: #FFFFFF;
+}
+
+/* Focus styles: intentional hairline outline in brand */
+input:focus-visible,
+select:focus-visible,
+textarea:focus-visible,
+button:focus-visible,
+a:focus-visible {
+  outline: 2px solid var(--brand);
+  outline-offset: 2px;
+}
+
+/* Hairline borders */
+.border-hairline {
+  border-width: 1px;
+  border-color: var(--line);
+}
+
+/* Minimal Custom Scrollbar */
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+
+::-webkit-scrollbar-track {
+  background: var(--paper);
+}
+
+::-webkit-scrollbar-thumb {
+  background: var(--line-strong);
+  border-radius: 9999px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: var(--muted);
+}
+
+/* Accessible reduced motion */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  ::before,
+  ::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+}

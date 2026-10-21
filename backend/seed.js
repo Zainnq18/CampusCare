@@ -1,0 +1,1217 @@
+/**
+ * CampusCare 2.0 Database Seeder Script
+ * Idempotently seeds:
+ * - 2 Admin Accounts
+ * - 8 Specialized Staff Personnel (Electrical, Plumbing, Civil, IT, Cleaning, Security, Furniture, Lead)
+ * - 12 Diverse Student Accounts
+ * - 50 Realistic Campus Complaints across all statuses, priorities, and categories
+ * - Discussion Comments, Timeline Events, In-App Notifications, and Feedback Ratings
+ * 
+ * Run using: `npm run seed` or `npm run seed:demo`
+ */
+const mongoose = require('mongoose');
+const dotenv = require('dotenv');
+const User = require('./models/User');
+const Complaint = require('./models/Complaint');
+const Comment = require('./models/Comment');
+const Notification = require('./models/Notification');
+const SystemLock = require('./models/SystemLock');
+const { evaluatePriority } = require('./services/priorityService');
+const { calculateSlaDeadlines, computeSlaStatus } = require('./services/slaService');
+
+dotenv.config();
+
+const DEFAULT_DEMO_PASS = 'CampusCare@2026';
+const SEED_DEMO_PASSWORD = process.env.SEED_DEMO_PASSWORD || process.env.DEMO_PASSWORD || DEFAULT_DEMO_PASS;
+const ADMIN_PASSWORD = process.env.ADMIN_PASSWORD || SEED_DEMO_PASSWORD;
+const STAFF_PASSWORD = process.env.STAFF_PASSWORD || SEED_DEMO_PASSWORD;
+const STUDENT_PASSWORD = process.env.STUDENT_PASSWORD || SEED_DEMO_PASSWORD;
+
+const upsertUser = async ({ name, email, password, role, studentId = null }) => {
+  const normalizedEmail = email.toLowerCase().trim();
+  let user = await User.findOne({ email: normalizedEmail }).select('+password');
+  if (!user) {
+    user = await User.create({ name, email: normalizedEmail, password, role, studentId });
+    console.log(`[Seed:User] Created ${role.toUpperCase()}: ${normalizedEmail}`);
+  } else {
+    user.name = name;
+    user.role = role;
+    if (studentId) user.studentId = studentId;
+
+    const isMatch = await user.matchPassword(password);
+    if (!isMatch) {
+      user.password = password;
+      await user.save();
+      console.log(`[Seed:User] Updated credentials for ${role.toUpperCase()}: ${normalizedEmail}`);
+    } else {
+      await user.save();
+      console.log(`[Seed:User] Synced ${role.toUpperCase()}: ${normalizedEmail}`);
+    }
+  }
+  return user;
+};
+
+const seedDemonstrationData = async () => {
+  let mongod = null;
+  try {
+    let mongoUri = process.env.MONGO_URI || 'mongodb://127.0.0.1:27017/campuscare';
+    console.log(`[Seed] Connecting to MongoDB at: ${mongoUri}`);
+
+    try {
+      await mongoose.connect(mongoUri, { serverSelectionTimeoutMS: 4000 });
+      console.log('[Seed] Database connected successfully.');
+    } catch (connErr) {
+      if (process.env.NODE_ENV === 'test' || process.env.ALLOW_IN_MEMORY_DB === 'true') {
+        console.warn(`[Seed] Direct connection failed (${connErr.message}). Using MongoMemoryServer fallback for verification...`);
+        const { MongoMemoryServer } = require('mongodb-memory-server');
+        mongod = await MongoMemoryServer.create();
+        mongoUri = mongod.getUri();
+        console.log(`[Seed] Connected to in-memory MongoDB at: ${mongoUri}`);
+        await mongoose.connect(mongoUri);
+      } else {
+        console.error(`[Seed FATAL] Cannot connect to MongoDB at ${mongoUri}: ${connErr.message}`);
+        console.error(`[Seed FATAL] Ensure MongoDB is running or set MONGO_URI appropriately.`);
+        throw connErr;
+      }
+    }
+
+    // -------------------------------------------------------------
+    // 1. Seed Administrators (2 accounts)
+    // -------------------------------------------------------------
+    const adminLead = await upsertUser({
+      name: 'Campus Administrator',
+      email: 'admin@manipal.edu',
+      password: ADMIN_PASSWORD,
+      role: 'admin',
+    });
+
+    const adminDirector = await upsertUser({
+      name: 'Dr. S. K. Deshmukh (Facility Director)',
+      email: 'campus.director@manipal.edu',
+      password: ADMIN_PASSWORD,
+      role: 'admin',
+    });
+
+    // -------------------------------------------------------------
+    // 2. Seed Specialized Staff Members (8 accounts)
+    // -------------------------------------------------------------
+    const staffLead = await upsertUser({
+      name: 'Ramesh Deshmukh (Facilities Lead)',
+      email: 'staff@manipal.edu',
+      password: STAFF_PASSWORD,
+      role: 'staff',
+    });
+
+    const staffElectrical = await upsertUser({
+      name: 'Rajesh Kumar (Electrical)',
+      email: 'staff.electrical@manipal.edu',
+      password: STAFF_PASSWORD,
+      role: 'staff',
+    });
+
+    const staffPlumbing = await upsertUser({
+      name: 'Suresh Patil (Plumbing)',
+      email: 'staff.plumbing@manipal.edu',
+      password: STAFF_PASSWORD,
+      role: 'staff',
+    });
+
+    const staffCivil = await upsertUser({
+      name: 'Anil Shinde (Civil & Maintenance)',
+      email: 'staff.civil@manipal.edu',
+      password: STAFF_PASSWORD,
+      role: 'staff',
+    });
+
+    const staffIT = await upsertUser({
+      name: 'Vikram Joshi (Network & IT Support)',
+      email: 'staff.it@manipal.edu',
+      password: STAFF_PASSWORD,
+      role: 'staff',
+    });
+
+    const staffCleaning = await upsertUser({
+      name: 'Sunita Jadhav (Housekeeping)',
+      email: 'staff.cleaning@manipal.edu',
+      password: STAFF_PASSWORD,
+      role: 'staff',
+    });
+
+    const staffSecurity = await upsertUser({
+      name: 'Mahesh Pawar (Security & Access)',
+      email: 'staff.security@manipal.edu',
+      password: STAFF_PASSWORD,
+      role: 'staff',
+    });
+
+    const staffFurniture = await upsertUser({
+      name: 'Dinesh More (Carpentry & Furniture)',
+      email: 'staff.furniture@manipal.edu',
+      password: STAFF_PASSWORD,
+      role: 'staff',
+    });
+
+    // -------------------------------------------------------------
+    // 3. Seed Students (13 accounts: 1 canonical demo student + 12 diverse students)
+    // -------------------------------------------------------------
+    const studentsData = [
+      { name: 'Campus Demo Student', email: 'student@learner.manipal.edu', studentId: '235805400' },
+      { name: 'Aarav Sharma', email: 'aarav.sharma@learner.manipal.edu', studentId: '235805401' },
+      { name: 'Neha Patil', email: 'neha.patil@learner.manipal.edu', studentId: '235805402' },
+      { name: 'Rohan Deshmukh', email: 'rohan.deshmukh@learner.manipal.edu', studentId: '235805403' },
+      { name: 'Ananya Sharma', email: 'ananya.sharma@learner.manipal.edu', studentId: '235805404' },
+      { name: 'Priya Kulkarni', email: 'priya.kulkarni@learner.manipal.edu', studentId: '235805405' },
+      { name: 'Aditya Verma', email: 'aditya.verma@learner.manipal.edu', studentId: '235805406' },
+      { name: 'Tanvi Joshi', email: 'tanvi.joshi@learner.manipal.edu', studentId: '235805407' },
+      { name: 'Rahul Nair', email: 'rahul.nair@learner.manipal.edu', studentId: '235805408' },
+      { name: 'Sneha Chavan', email: 'sneha.chavan@learner.manipal.edu', studentId: '235805409' },
+      { name: 'Siddharth Mehta', email: 'siddharth.mehta@learner.manipal.edu', studentId: '235805410' },
+      { name: 'Pooja Shinde', email: 'pooja.shinde@learner.manipal.edu', studentId: '235805411' },
+      { name: 'Varun Gupta', email: 'varun.gupta@learner.manipal.edu', studentId: '235805412' },
+    ];
+
+    const students = [];
+    for (const s of studentsData) {
+      const student = await upsertUser({ ...s, password: STUDENT_PASSWORD, role: 'student' });
+      students.push(student);
+    }
+
+    // -------------------------------------------------------------
+    // 4. Reset & Seed 50 Realistic Campus Complaints
+    // -------------------------------------------------------------
+    await Complaint.deleteMany({});
+    await Comment.deleteMany({});
+    await Notification.deleteMany({});
+    await SystemLock.deleteMany({});
+    console.log('[Seed] Cleared existing complaints, comments, notifications, and system locks.');
+
+    const now = Date.now();
+    const hours = (h) => new Date(now - h * 60 * 60 * 1000);
+    const days = (d) => new Date(now - d * 24 * 60 * 60 * 1000);
+
+    const complaintsDefinitions = [
+      // 1. PENDING
+      {
+        title: 'Ceiling Fan Regulators Loose in LH-302',
+        description: 'Two ceiling fans in Lecture Hall 302 have malfunctioning wall speed switches causing sparking.',
+        category: 'Classroom Infrastructure',
+        location: 'AB-2, 3rd Floor, Room LH-302',
+        priority: 'MEDIUM',
+        status: 'PENDING',
+        student: students[0],
+        createdAt: hours(2),
+      },
+      // 2. PENDING
+      {
+        title: 'Water Cooler Filter Choked in Mechanical Workshop',
+        description: 'Drinking water dispenser exhibits low discharge and cloudy water output near lathe machine bay.',
+        category: 'Plumbing',
+        location: 'AB-5, Ground Floor Water Station',
+        priority: 'HIGH',
+        student: students[1],
+        createdAt: hours(5),
+      },
+      // 3. PENDING
+      {
+        title: 'Projector HDMI Audio Jack Broken in Audi-2',
+        description: 'HDMI cable connector has bent ground shielding pins resulting in buzzing audio and blank display.',
+        category: 'Equipment',
+        location: 'AB-5, Ground Floor Audi-2',
+        priority: 'LOW',
+        student: students[2],
+        createdAt: hours(10),
+      },
+      // 4. PENDING
+      {
+        title: 'Window Glass Latch Jammed in HB3 C-304',
+        description: 'North-facing window latch is misaligned, letting rain moisture penetrate into dorm study corner.',
+        category: 'Hostel Maintenance',
+        location: 'HB3, 3rd Floor, Room 304',
+        priority: 'MEDIUM',
+        student: students[3],
+        createdAt: hours(14),
+      },
+      // 5. PENDING
+      {
+        title: 'Flickering LED Batten Lights in Reading Hall 4',
+        description: 'Three overhead LED lights produce rapid 50Hz strobe flicker during evening library hours.',
+        category: 'Electrical',
+        location: 'Library, 2nd Floor Quiet Reading Section',
+        priority: 'LOW',
+        student: students[4],
+        createdAt: hours(18),
+      },
+      // 6. PENDING
+      {
+        title: 'Litter Accumulation Near Canteen Amphitheatre Steps',
+        description: 'Dustbin overfilled with food packaging following campus festival rehearsal.',
+        category: 'Cleanliness',
+        location: 'SMI, Amphitheatre West Staircase',
+        priority: 'MEDIUM',
+        student: students[5],
+        createdAt: hours(22),
+      },
+
+      // 7. REVIEWED (Demo Scenario: Manually Overridden Priority by Administrator)
+      {
+        title: 'LAN Jack Termination Dislodged in High-Performance Computing Lab',
+        description: 'Workstation Node-12 ethernet port wall faceplate pulled out with exposed CAT6 conductor pair.',
+        category: 'Internet/WiFi',
+        location: 'AB-3, 4th Floor, HPC Research Lab',
+        priority: 'HIGH',
+        prioritySource: 'MANUAL',
+        priorityReason: 'Administrative override: High-occupancy research cluster with active M.Tech capstone project evaluations.',
+        status: 'REVIEWED',
+        student: students[6],
+        createdAt: hours(6),
+      },
+      // 8. REVIEWED
+      {
+        title: 'Damaged Hydraulic Lift Cylinder on Seminar Chairs',
+        description: 'Four executive revolving chairs in conference room sink to lowest height under normal load.',
+        category: 'Furniture',
+        location: 'AB-1, 1st Floor Boardroom',
+        priority: 'LOW',
+        status: 'REVIEWED',
+        student: students[7],
+        createdAt: days(1),
+      },
+      // 9. REVIEWED
+      {
+        title: 'Biometric Turnstile Scanner Unresponsive at Gate 2',
+        description: 'Student ID RFID card reader takes up to 8 seconds to register morning entry punches.',
+        category: 'Other',
+        location: 'MARC, South Entry Turnstile Gate 2',
+        priority: 'HIGH',
+        status: 'REVIEWED',
+        student: students[8],
+        createdAt: days(2),
+      },
+      // 10. REVIEWED (Demo Scenario: Automatically Classified CRITICAL Hazard)
+      {
+        title: 'Water Stagnation Near Chemistry Lab Emergency Eye Wash',
+        description: 'Drainage pipe has slight upward gradient causing water pooling around the safety station.',
+        category: 'Plumbing',
+        location: 'AB-4, 1st Floor Chemistry Lab 108',
+        priority: 'CRITICAL',
+        prioritySource: 'AUTOMATIC',
+        priorityReason: 'Laboratory safety station hazard threatening eyewash accessibility.',
+        status: 'REVIEWED',
+        student: students[9],
+        createdAt: days(2),
+      },
+
+      // 11. ASSIGNED (Demo Scenario: HIGH + AT_RISK SLA Warning)
+      {
+        title: 'Master Switchboard MCB Trip in CAD Lab 104',
+        description: 'Circuit breaker trips when 10 or more CAD graphic workstations are switched on simultaneously.',
+        category: 'Electrical',
+        location: 'AB-5, Ground Floor, CAD Lab 104',
+        priority: 'HIGH',
+        prioritySource: 'AUTOMATIC',
+        priorityReason: 'High facility impact disrupting computer graphics laboratory curriculum.',
+        status: 'ASSIGNED',
+        staff: staffElectrical,
+        student: students[1],
+        createdAt: hours(19), // 19h elapsed out of 24h target -> 5h remaining (< 25%) -> AT_RISK
+        slaOverride: {
+          status: 'AT_RISK',
+          atRiskNotified: true,
+        },
+      },
+      // 12. ASSIGNED (Demo Scenario: HIGH + BREACHED SLA)
+      {
+        title: 'Hostel Block A 3rd Floor Washroom Basin Clog',
+        description: 'Two adjacent ceramic handwash basins have slow drainage with debris buildup in trap pipe.',
+        category: 'Plumbing',
+        location: 'HB1, 3rd Floor East Restroom',
+        priority: 'HIGH',
+        prioritySource: 'AUTOMATIC',
+        priorityReason: 'Sanitary plumbing issue in residential hostel wing.',
+        status: 'ASSIGNED',
+        staff: staffPlumbing,
+        student: students[0],
+        createdAt: hours(28), // 28h elapsed out of 24h target -> BREACHED by 4h
+        slaOverride: {
+          status: 'BREACHED',
+          resolutionBreached: true,
+          breachNotified: true,
+        },
+      },
+      // 13. ASSIGNED
+      {
+        title: 'Broken Drafting Table T-Square Guide Rail',
+        description: 'Architecture studio drafting board 14 has a loose aluminum parallel bar ruler.',
+        category: 'Furniture',
+        location: 'AB-5, Design Studio 202',
+        priority: 'LOW',
+        status: 'ASSIGNED',
+        staff: staffFurniture,
+        student: students[2],
+        createdAt: days(3),
+      },
+      // 14. ASSIGNED
+      {
+        title: 'Cracked Floor Tiles at Chemistry Lab Entrance',
+        description: 'Ceramic entryway tile has fractured with sharp uneven edges, creating a tripping hazard.',
+        category: 'Classroom Infrastructure',
+        location: 'AB-4, Ground Floor Hallway outside Lab 102',
+        priority: 'MEDIUM',
+        status: 'ASSIGNED',
+        staff: staffCivil,
+        student: students[3],
+        createdAt: days(4),
+      },
+      // 15. ASSIGNED
+      {
+        title: 'Hostel Block B 2nd Floor WiFi Packet Loss',
+        description: 'Cisco AP drops ping packets during peak study hours between 7 PM and 10 PM.',
+        category: 'Internet/WiFi',
+        location: 'HB2, 2nd Floor Corridor',
+        priority: 'HIGH',
+        status: 'ASSIGNED',
+        staff: staffIT,
+        student: students[4],
+        createdAt: days(4),
+      },
+      // 16. ASSIGNED (Demo Scenario: CRITICAL + ESCALATED Level 1)
+      {
+        title: 'Exhaust Fan Bearing Noise in Central Kitchen',
+        description: 'Commercial 24-inch exhaust hood fan generates loud metallic grinding vibration.',
+        category: 'Hostel Maintenance',
+        location: 'Chef’s Touch Mess, Kitchen Exhaust Hood Bay',
+        priority: 'CRITICAL',
+        prioritySource: 'AUTOMATIC',
+        priorityReason: 'Active safety hazard in dining kitchen ventilation system.',
+        status: 'ASSIGNED',
+        staff: staffLead,
+        student: students[5],
+        createdAt: hours(9), // 9h elapsed out of 8h CRITICAL target -> Overdue by 1h -> Level 1 escalation
+        slaOverride: {
+          status: 'BREACHED',
+          resolutionBreached: true,
+          breachNotified: true,
+          escalated: true,
+          escalationLevel: 1,
+          escalation1Notified: true,
+        },
+      },
+
+      // 17. IN_PROGRESS
+      {
+        title: 'Physics Darkroom Light Seal Gasket Detached',
+        description: 'Optics experiments compromised due to exterior sunlight leaking past the revolving door frame.',
+        category: 'Classroom Infrastructure',
+        location: 'AB-4, Basement Darkroom B-08',
+        priority: 'HIGH',
+        status: 'IN_PROGRESS',
+        staff: staffCivil,
+        student: students[6],
+        createdAt: days(5),
+      },
+      // 18. IN_PROGRESS (Demo Scenario: CRITICAL + ESCALATED Level 2 Executive Director queue)
+      {
+        title: 'Main Server Room Split AC Temperature Sensor Drift',
+        description: 'Primary 2-ton cooling unit reports 18C but ambient temperature probe reads 27C near core rack 3.',
+        category: 'Equipment',
+        location: 'AB-3 server room, 2nd Floor IT Wing',
+        priority: 'CRITICAL',
+        prioritySource: 'AUTOMATIC',
+        priorityReason: 'Critical IT server infrastructure overheating threat.',
+        status: 'IN_PROGRESS',
+        staff: staffElectrical,
+        student: students[7],
+        createdAt: hours(15), // 15h elapsed out of 8h target -> Overdue by 7h (> 120m) -> Level 2 escalation
+        slaOverride: {
+          status: 'BREACHED',
+          resolutionBreached: true,
+          breachNotified: true,
+          escalated: true,
+          escalationLevel: 2,
+          escalation1Notified: true,
+          escalation2Notified: true,
+        },
+      },
+      // 19. IN_PROGRESS
+      {
+        title: 'Overhead Water Tank Float Sensor Malfunction',
+        description: 'Hostel C rooftop water storage pump runs continuously even after reaching maximum brim level.',
+        category: 'Plumbing',
+        location: 'HB3 Rooftop Reservoir',
+        priority: 'HIGH',
+        status: 'IN_PROGRESS',
+        staff: staffPlumbing,
+        student: students[8],
+        createdAt: days(5),
+      },
+      // 20. IN_PROGRESS
+      {
+        title: 'Sports Complex Main Hall Floor Polish Stripped',
+        description: 'Badminton wooden court floor has lost anti-slip grip near court boundary 2.',
+        category: 'Cleanliness',
+        location: 'SMI, Wooden Court 2',
+        priority: 'LOW',
+        status: 'IN_PROGRESS',
+        staff: staffCleaning,
+        student: students[9],
+        createdAt: days(6),
+      },
+      // 21. IN_PROGRESS
+      {
+        title: 'Digital Signage Display Screen Dead Pixels',
+        description: 'Notice board 55-inch display in campus lobby has vertical pink line across right half.',
+        category: 'Internet/WiFi',
+        location: 'AB-1 Atrium, Digital Notice Board',
+        priority: 'MEDIUM',
+        status: 'IN_PROGRESS',
+        staff: staffIT,
+        student: students[10],
+        createdAt: days(6),
+      },
+      // 22. IN_PROGRESS
+      {
+        title: 'CCTV Camera 07 Glare Distortion at West Parking',
+        description: 'Security camera dome has dirt film scattering night illumination lamps.',
+        category: 'Other',
+        location: 'TAPMI, Pole 4',
+        priority: 'MEDIUM',
+        status: 'IN_PROGRESS',
+        staff: staffSecurity,
+        student: students[11],
+        createdAt: days(6),
+      },
+
+      // 23. RESOLVED (Demo Scenario: Resolved Within SLA Target Window)
+      {
+        title: 'Flush Valve Leakage in Main Building 1st Floor Washroom',
+        description: 'Continuous water drainage from central flush valve in cubicle 3.',
+        category: 'Plumbing',
+        location: 'AB-1, 1st Floor East Wing Washroom',
+        priority: 'MEDIUM',
+        status: 'RESOLVED',
+        staff: staffPlumbing,
+        student: students[1],
+        resolvedWithinSla: true,
+        resolutionNotes: 'Replaced worn rubber seal washer and calibrated dual-flush brass cylinder. Pressure tested leak-free.',
+        feedback: { rating: 5, comment: 'Fixed the leak within two hours. Excellent plumbing support.' },
+        createdAt: days(3),
+      },
+      // 24. RESOLVED
+      {
+        title: 'Interactive Smart Board Touch Offset in Seminar Hall 1',
+        description: 'Infrared stylus input had 5cm leftward calibration drift.',
+        category: 'Equipment',
+        location: 'AB-1, Seminar Hall 1',
+        priority: 'HIGH',
+        status: 'RESOLVED',
+        staff: staffIT,
+        student: students[0],
+        resolutionNotes: 'Recalibrated 9-point optical sensor array and updated firmware to build 4.2.1.',
+        feedback: { rating: 5, comment: 'Touch works accurately now. Great help before our symposium!' },
+        createdAt: days(8),
+      },
+      // 25. RESOLVED
+      {
+        title: 'Corridor Safety Fire Door Magnet Release Broken',
+        description: 'Magnetic door holder was unpowered, causing emergency egress door to swing shut in wind.',
+        category: 'Other',
+        location: 'AB-3, 2nd Floor Fire Stairwell',
+        priority: 'CRITICAL',
+        status: 'RESOLVED',
+        staff: staffElectrical,
+        student: students[2],
+        resolutionNotes: 'Replaced 24V DC electromagnetic armature coil and verified fire alarm panel interlock trip.',
+        feedback: { rating: 4, comment: 'Door stays open safely now. Thank you for prompt action.' },
+        createdAt: days(9),
+      },
+      // 26. RESOLVED
+      {
+        title: 'Broken Wooden Armrest on Lecture Hall Bench 24',
+        description: 'Splintered oak armrest panel in LH 204 created snag hazard for backpacks.',
+        category: 'Furniture',
+        location: 'AB-1, 2nd Floor, Room LH-204',
+        priority: 'LOW',
+        status: 'RESOLVED',
+        staff: staffFurniture,
+        student: students[3],
+        resolutionNotes: 'Removed broken section, sanded smooth, and installed reinforced matching oak armrest bracket.',
+        feedback: { rating: 5, comment: 'Clean repair. No more sharp edges.' },
+        createdAt: days(10),
+      },
+      // 27. RESOLVED (Demo Scenario: Resolved After SLA Deadline Breach)
+      {
+        title: 'Hostel Mess Drainage Grate Blockage',
+        description: 'Dishwashing area exterior floor trap clogged with food grease residue.',
+        category: 'Cleanliness',
+        location: 'Chef’s Touch Mess kitchen Exterior Wash Area',
+        priority: 'HIGH',
+        status: 'RESOLVED',
+        staff: staffCleaning,
+        student: students[4],
+        resolvedWithinSla: false,
+        resolutionNotes: 'High-pressure hydro-jet cleared oil trap and sanitized trench with chlorine wash.',
+        feedback: { rating: 4, comment: 'Drainage is completely clean now although it took longer than expected.' },
+        createdAt: days(4),
+      },
+      // 28. RESOLVED
+      {
+        title: 'Hostel Study Room Power Strip Sparking',
+        description: 'Extension socket under study desk 3 had scorched live pin receptacle.',
+        category: 'Electrical',
+        location: 'HB1, 1st Floor Common Study Room',
+        priority: 'HIGH',
+        status: 'RESOLVED',
+        staff: staffElectrical,
+        student: students[5],
+        resolutionNotes: 'Replaced complete 6-gang surge protected socket box and tested line insulation impedance.',
+        feedback: { rating: 5, comment: 'Replaced with brand new surge protector. Safe to use now!' },
+        createdAt: days(12),
+      },
+      // 29. RESOLVED (Historical - 16 days ago)
+      {
+        title: 'Network Switch Fan Failure in Server Room Rack B',
+        description: 'Exhaust fan bearings failed causing thermal alert on 48-port distribution switch.',
+        category: 'Internet/WiFi',
+        location: 'AB-3, Ground Floor Server Room',
+        priority: 'CRITICAL',
+        status: 'RESOLVED',
+        staff: staffIT,
+        student: students[6],
+        resolvedWithinSla: true,
+        resolutionNotes: 'Replaced dual brushless chassis fans and restored internal rack temperature to 21C.',
+        feedback: { rating: 5, comment: 'Quick critical turnaround preventing campus-wide switch outage.' },
+        createdAt: days(16),
+      },
+      // 30. RESOLVED (Historical - 18 days ago)
+      {
+        title: 'Classroom Projector Color Calibration Glitch in LH-101',
+        description: 'DLP projector displaying heavy magenta tint across lecture presentations.',
+        category: 'Equipment',
+        location: 'AB-1, 1st Floor, Room LH-101',
+        priority: 'MEDIUM',
+        status: 'RESOLVED',
+        staff: staffIT,
+        student: students[7],
+        resolvedWithinSla: true,
+        resolutionNotes: 'Cleaned optical color wheel sensor and reset factory EDID parameters.',
+        feedback: { rating: 4, comment: 'Display colors are crisp again.' },
+        createdAt: days(18),
+      },
+      // 31. RESOLVED (Historical - 22 days ago, Breached SLA)
+      {
+        title: 'Underground Sewer Trap Backflow Near Sports Complex',
+        description: 'Storm drain grease trap overflowed onto asphalt pedestrian walkway.',
+        category: 'Plumbing',
+        location: 'SMI, Exterior Restroom Trench',
+        priority: 'HIGH',
+        status: 'RESOLVED',
+        staff: staffPlumbing,
+        student: students[8],
+        resolvedWithinSla: false,
+        resolutionNotes: 'Clearance required municipal vacuum truck excavation. Cleared compacted root intrusion.',
+        feedback: { rating: 3, comment: 'Drain cleared completely but took 3 days due to external equipment arrival.' },
+        createdAt: days(22),
+      },
+      // 32. RESOLVED (Historical - 25 days ago)
+      {
+        title: 'Broken Steel Hinge on Main Library Fire Exit',
+        description: 'Heavy gauge steel panic bar latch stuck in ajar state.',
+        category: 'Other',
+        location: 'Library, Ground Floor East Fire Exit',
+        priority: 'HIGH',
+        status: 'RESOLVED',
+        staff: staffCivil,
+        student: students[9],
+        resolvedWithinSla: true,
+        resolutionNotes: 'Welded reinforced backing plate and lubricated mortise cylinder mechanism.',
+        feedback: { rating: 5, comment: 'Door seals securely now.' },
+        createdAt: days(25),
+      },
+      // 33. RESOLVED (Historical - 28 days ago)
+      {
+        title: 'Exhaust Fan Motor Jammed in Chemistry Acid Store',
+        description: 'Vapour extraction blower fan stalled emitting low buzzing hum.',
+        category: 'Electrical',
+        location: 'AB-4, 2nd Floor Chemistry Hazardous Store',
+        priority: 'CRITICAL',
+        status: 'RESOLVED',
+        staff: staffElectrical,
+        student: students[10],
+        resolvedWithinSla: true,
+        resolutionNotes: 'Replaced thermal overload relay and capacitor on blower unit.',
+        feedback: { rating: 5, comment: 'Immediate response on critical safety hazard.' },
+        createdAt: days(28),
+      },
+      // 34. RESOLVED (Historical - 35 days ago, Breached SLA)
+      {
+        title: 'Hostel Corridor Ceiling Plaster Flaking Following Monsoon Rain',
+        description: 'Moisture ingress caused 1 sq. meter paint and plaster bubble near room 210.',
+        category: 'Hostel Maintenance',
+        location: 'HB1, 2nd Floor Corridor',
+        priority: 'MEDIUM',
+        status: 'RESOLVED',
+        staff: staffCivil,
+        student: students[11],
+        resolvedWithinSla: false,
+        resolutionNotes: 'Scraped degraded plaster, applied hydrophobic primer, and replastered with waterproof putty.',
+        feedback: { rating: 3, comment: 'Repair looks neat now.' },
+        createdAt: days(35),
+      },
+      // 35. RESOLVED (Historical - 40 days ago)
+      {
+        title: 'Corridor Waste Bin Lid Mechanism Detached',
+        description: 'Foot-pedal linkage sheared on stainless steel sorting receptacle.',
+        category: 'Cleanliness',
+        location: 'AB-2, 1st Floor Foyer',
+        priority: 'LOW',
+        status: 'RESOLVED',
+        staff: staffCleaning,
+        student: students[0],
+        resolvedWithinSla: true,
+        resolutionNotes: 'Installed heavy-duty stainless steel clevis pin and re-tensioned pedal spring.',
+        feedback: { rating: 4, comment: 'Pedal works smoothly.' },
+        createdAt: days(40),
+      },
+      // 36. RESOLVED (Historical - 45 days ago)
+      {
+        title: 'Faulty HDMI Splitter in Mechanical Seminar Room',
+        description: 'Splitter cuts video feed intermittently every 10 minutes.',
+        category: 'Equipment',
+        location: 'AB-5, 2nd Floor Seminar Room',
+        priority: 'MEDIUM',
+        status: 'RESOLVED',
+        staff: staffIT,
+        student: students[1],
+        resolvedWithinSla: true,
+        resolutionNotes: 'Replaced faulty 1-in-4-out HDMI distribution amplifier with 4K powered hub.',
+        feedback: { rating: 5, comment: 'Presentations running without any dropouts.' },
+        createdAt: days(45),
+      },
+      // 37. RESOLVED (Historical - 50 days ago)
+      {
+        title: 'Water Tap Leaking Continuously in HB3 First Floor',
+        description: 'Ceramic disc cartridge worn out in washroom tap 2.',
+        category: 'Plumbing',
+        location: 'HB3, 1st Floor Common Washroom',
+        priority: 'LOW',
+        status: 'RESOLVED',
+        staff: staffPlumbing,
+        student: students[2],
+        resolvedWithinSla: true,
+        resolutionNotes: 'Installed new quarter-turn ceramic spindle and verified water-tight seal.',
+        feedback: { rating: 5, comment: 'Fixed without water wastage.' },
+        createdAt: days(50),
+      },
+      // 38. RESOLVED (Historical - 60 days ago)
+      {
+        title: 'Classroom Desk Welds Broken on Row 4 in LH-201',
+        description: 'Dual-bench steel frame wobbling under load during lectures.',
+        category: 'Furniture',
+        location: 'AB-1, 2nd Floor, Room LH-201',
+        priority: 'LOW',
+        status: 'RESOLVED',
+        staff: staffFurniture,
+        student: students[3],
+        resolvedWithinSla: true,
+        resolutionNotes: 'Arc-welded frame gusset reinforcements and repainted base frame.',
+        feedback: { rating: 4, comment: 'Sturdy repair.' },
+        createdAt: days(60),
+      },
+      // 39. RESOLVED (Historical - 70 days ago)
+      {
+        title: 'High-Speed Wi-Fi AP Firmware Loop in Library 1st Floor',
+        description: 'Access Point AP-LIB-02 continuously rebooting under 50+ concurrent client loads.',
+        category: 'Internet/WiFi',
+        location: 'Library, 1st Floor Reference Hall',
+        priority: 'HIGH',
+        status: 'RESOLVED',
+        staff: staffIT,
+        student: students[4],
+        resolvedWithinSla: true,
+        resolutionNotes: 'Reflashed controller firmware and optimized 5GHz band steering profile.',
+        feedback: { rating: 5, comment: 'Wi-Fi connection is rock solid now.' },
+        createdAt: days(70),
+      },
+      // 40. RESOLVED (Historical - 80 days ago, Breached SLA)
+      {
+        title: 'Main Incomer Air Circuit Breaker Aux Contact Chatter',
+        description: 'Transformer substation sub-panel relay clicking during peak load transitions.',
+        category: 'Electrical',
+        location: 'MARC',
+        priority: 'CRITICAL',
+        status: 'RESOLVED',
+        staff: staffElectrical,
+        student: students[5],
+        resolvedWithinSla: false,
+        resolutionNotes: 'Coordinated planned 30-min campus power changeover. Replaced auxiliary contact block.',
+        feedback: { rating: 4, comment: 'Critical repair completed safely during scheduled maintenance window.' },
+        createdAt: days(80),
+      },
+      // 41. RESOLVED (Historical - 95 days ago)
+      {
+        title: 'Restroom Flush Cistern Float Stuck in AB-2',
+        description: 'Water continuously running into bowl wasting overhead tank supply.',
+        category: 'Plumbing',
+        location: 'AB-2, Ground Floor Restroom',
+        priority: 'MEDIUM',
+        status: 'RESOLVED',
+        staff: staffPlumbing,
+        student: students[6],
+        resolvedWithinSla: true,
+        resolutionNotes: 'De-scaled mineral deposits from inlet needle valve and calibrated float arm.',
+        feedback: { rating: 5, comment: 'Resolved quickly.' },
+        createdAt: days(95),
+      },
+      // 42. RESOLVED (Historical - 110 days ago)
+      {
+        title: 'Classroom Whiteboard Enamel Chipped in Room LH-105',
+        description: 'Central 30cm section of magnetic marker board scratched down to base metal.',
+        category: 'Classroom Infrastructure',
+        location: 'AB-1, 1st Floor, Room LH-105',
+        priority: 'LOW',
+        status: 'RESOLVED',
+        staff: staffFurniture,
+        student: students[7],
+        resolvedWithinSla: true,
+        resolutionNotes: 'Replaced whiteboard sheet with new 8x4ft ceramic-coated magnetic board.',
+        feedback: { rating: 5, comment: 'Brand new board, writing is smooth.' },
+        createdAt: days(110),
+      },
+      // 43. RESOLVED (Historical - 125 days ago)
+      {
+        title: 'Corridor Emergency Battery Exit Light Unilluminated',
+        description: 'NiCad backup battery in exit sign exhausted during monthly safety trip.',
+        category: 'Electrical',
+        location: 'AB-1, 2nd Floor Corridor',
+        priority: 'HIGH',
+        status: 'RESOLVED',
+        staff: staffElectrical,
+        student: students[8],
+        resolvedWithinSla: true,
+        resolutionNotes: 'Installed new 7.2V lithium-iron-phosphate battery module and tested emergency cutover.',
+        feedback: { rating: 5, comment: 'Compliance inspected and green indicator illuminated.' },
+        createdAt: days(125),
+      },
+      // 44. RESOLVED (Historical - 140 days ago)
+      {
+        title: 'Canteen Floor Oil Slick Near Fryer Station',
+        description: 'Vegetable oil splatter accumulated creating slip danger for serving staff.',
+        category: 'Cleanliness',
+        location: 'Chef’s Touch Mess kitchen Exterior Wash Area',
+        priority: 'HIGH',
+        status: 'RESOLVED',
+        staff: staffCleaning,
+        student: students[9],
+        resolvedWithinSla: true,
+        resolutionNotes: 'Treated with industrial degreaser solvent and hot water pressure wash.',
+        feedback: { rating: 5, comment: 'Thoroughly sanitized and dried.' },
+        createdAt: days(140),
+      },
+      // 45. RESOLVED (Historical - 155 days ago)
+      {
+        title: 'HB1 Room 112 Balcony Door Handle Snapped',
+        description: 'Die-cast zinc lever handle sheared off latch spindle.',
+        category: 'Hostel Maintenance',
+        location: 'HB1, 1st Floor, Room 112',
+        priority: 'LOW',
+        status: 'RESOLVED',
+        staff: staffCivil,
+        student: students[10],
+        resolvedWithinSla: true,
+        resolutionNotes: 'Fitted solid brass architectural lever handle and lubricated mortise lock.',
+        feedback: { rating: 4, comment: 'Solid brass replacement, feels durable.' },
+        createdAt: days(155),
+      },
+      // 46. RESOLVED (Historical - 170 days ago)
+      {
+        title: 'Library Digital Catalogue PC Blue Screen Crash',
+        description: 'Search terminal 3 SSD sector errors caused OS kernel halt on boot.',
+        category: 'Equipment',
+        location: 'Library, Ground Floor OPAC Station',
+        priority: 'MEDIUM',
+        status: 'RESOLVED',
+        staff: staffIT,
+        student: students[11],
+        resolvedWithinSla: true,
+        resolutionNotes: 'Cloned drive to 256GB NVMe SSD and restored customized catalogue kiosk profile.',
+        feedback: { rating: 5, comment: 'Terminal boots instantly now.' },
+        createdAt: days(170),
+      },
+      // 47. RESOLVED (Historical - 190 days ago)
+      {
+        title: 'Water Pressure Drop in HB3 Top Floor',
+        description: 'Roof booster pump pressure switch cut-in pressure drifted low.',
+        category: 'Plumbing',
+        location: 'HB3, 4th Floor Supply Line',
+        priority: 'HIGH',
+        status: 'RESOLVED',
+        staff: staffPlumbing,
+        student: students[0],
+        resolvedWithinSla: true,
+        resolutionNotes: 'Recalibrated Danfoss pressure switch differential to 3.5 bar and primed line.',
+        feedback: { rating: 5, comment: 'Full water pressure restored to all top floor dorms.' },
+        createdAt: days(190),
+      },
+      // 48. RESOLVED (Historical - 220 days ago)
+      {
+        title: 'AB-4 Distilled Water Plant Heating Element Burnt',
+        description: 'Quartz boiler element open-circuited in departmental pure water still.',
+        category: 'Equipment',
+        location: 'AB-4, 1st Floor Chemistry Lab 108',
+        priority: 'HIGH',
+        status: 'RESOLVED',
+        staff: staffElectrical,
+        student: students[1],
+        resolvedWithinSla: true,
+        resolutionNotes: 'Installed new 3kW quartz heating element and tested distillate conductivity.',
+        feedback: { rating: 4, comment: 'Pure water production back online for practical exams.' },
+        createdAt: days(220),
+      },
+      // 49. RESOLVED (Historical - 260 days ago)
+      {
+        title: 'Security Turnstile Barrier Arm Misaligned at Main Gate',
+        description: 'Tripod turnstile pawl spring bent after heavy crowd exit.',
+        category: 'Other',
+        location: 'MARC, South Entry Turnstile Gate 2',
+        priority: 'MEDIUM',
+        status: 'RESOLVED',
+        staff: staffSecurity,
+        student: students[2],
+        resolvedWithinSla: true,
+        resolutionNotes: 'Replaced tempered return spring and aligned magnetic optical encoder disc.',
+        feedback: { rating: 5, comment: 'Smooth 3-arm rotation restored.' },
+        createdAt: days(260),
+      },
+      // 50. RESOLVED (Historical - 310 days ago)
+      {
+        title: 'Central Server Room Fiber Patch Cable Pinched in Duct',
+        description: 'Duplex LC multimode fiber attenuation jumped to 14dB in cable tray.',
+        category: 'Internet/WiFi',
+        location: 'AB-3, Ground Floor Server Room',
+        priority: 'CRITICAL',
+        status: 'RESOLVED',
+        staff: staffIT,
+        student: students[3],
+        resolvedWithinSla: true,
+        resolutionNotes: 'Rerouted armored OM4 patch cord through dedicated fiber conduit; link loss 0.4dB.',
+        feedback: { rating: 5, comment: 'Backbone link throughput 100% restored.' },
+        createdAt: days(310),
+      },
+    ];
+
+    let seededComplaintsCount = 0;
+
+    for (const def of complaintsDefinitions) {
+      const student = def.student;
+      const staff = def.staff || null;
+
+      // Priority evaluation & source attribution
+      const evaluated = evaluatePriority({
+        title: def.title,
+        description: def.description,
+        category: def.category,
+        location: def.location,
+      });
+
+      const priority = def.priority || evaluated.priority;
+      const prioritySource = def.prioritySource || 'AUTOMATIC';
+      const priorityReason = def.priorityReason || evaluated.priorityReason;
+
+      // SLA calculation & lifecycle scenario application
+      let baseSla = calculateSlaDeadlines(priority, def.createdAt);
+
+      if (def.status !== 'PENDING') {
+        baseSla.responseAt = new Date(def.createdAt.getTime() + 2 * 60 * 60 * 1000);
+        baseSla.responseBreached = false;
+      }
+
+      if (def.status === 'RESOLVED') {
+        const resolutionHours = def.resolvedWithinSla === false ? Math.round((baseSla.resolutionTargetMinutes / 60) + 12) : 10;
+        const resolutionTime = new Date(def.createdAt.getTime() + resolutionHours * 60 * 60 * 1000);
+        baseSla.resolutionAt = resolutionTime;
+        baseSla.resolutionBreached = def.resolvedWithinSla === false;
+        baseSla.status = 'RESOLVED';
+      } else if (def.slaOverride) {
+        Object.assign(baseSla, def.slaOverride);
+        if (def.slaOverride.escalated) {
+          baseSla.escalatedAt = new Date(def.createdAt.getTime() + baseSla.resolutionTargetMinutes * 60 * 1000);
+        }
+      } else {
+        const computed = computeSlaStatus({ createdAt: def.createdAt, priority, sla: baseSla, status: def.status });
+        baseSla.status = computed.status;
+      }
+
+      // Status history
+      const history = [
+        {
+          status: 'PENDING',
+          changedAt: def.createdAt,
+          changedBy: student._id,
+          notes: 'Initial issue reported via student portal.',
+        },
+      ];
+
+      // Activity timeline
+      const timeline = [
+        {
+          eventType: 'CREATED',
+          actor: student._id,
+          actorName: student.name,
+          actorRole: 'student',
+          message: 'Complaint submitted by student',
+          timestamp: def.createdAt,
+        },
+      ];
+
+      // Priority timeline event
+      if (prioritySource === 'MANUAL') {
+        timeline.push({
+          eventType: 'PRIORITY_CHANGED',
+          actor: adminLead._id,
+          actorName: adminLead.name,
+          actorRole: 'admin',
+          message: `Priority manually set to ${priority}: ${priorityReason}`,
+          timestamp: new Date(def.createdAt.getTime() + 10 * 60 * 1000),
+          metadata: { priority, reason: priorityReason, source: 'MANUAL' },
+        });
+      } else {
+        timeline.push({
+          eventType: 'PRIORITY_AUTO_ASSIGNED',
+          actorName: 'System Automation',
+          actorRole: 'system',
+          message: `Priority classified as ${priority}: ${priorityReason}`,
+          timestamp: def.createdAt,
+          metadata: { priority, reason: priorityReason, source: 'AUTOMATIC' },
+        });
+      }
+
+      // SLA policy activation event
+      timeline.push({
+        eventType: 'SLA_STARTED',
+        actorName: 'System Automation',
+        actorRole: 'system',
+        message: `SLA policy activated. Target resolution: ${Math.round(baseSla.resolutionTargetMinutes / 60)}h.`,
+        timestamp: def.createdAt,
+        metadata: {
+          responseDeadline: baseSla.responseDeadline,
+          resolutionDeadline: baseSla.resolutionDeadline,
+        },
+      });
+
+      if (def.status === 'REVIEWED' || def.status === 'ASSIGNED' || def.status === 'IN_PROGRESS' || def.status === 'RESOLVED') {
+        const reviewedTime = new Date(def.createdAt.getTime() + 2 * 60 * 60 * 1000);
+        history.push({
+          status: 'REVIEWED',
+          changedAt: reviewedTime,
+          changedBy: adminLead._id,
+          notes: 'Reviewed by campus administration.',
+        });
+        timeline.push({
+          eventType: 'STATUS_CHANGED',
+          actor: adminLead._id,
+          actorName: adminLead.name,
+          actorRole: 'admin',
+          message: 'Reviewed by administration',
+          timestamp: reviewedTime,
+        });
+      }
+
+      if (staff && (def.status === 'ASSIGNED' || def.status === 'IN_PROGRESS' || def.status === 'RESOLVED')) {
+        const assignedTime = new Date(def.createdAt.getTime() + 4 * 60 * 60 * 1000);
+        history.push({
+          status: 'ASSIGNED',
+          changedAt: assignedTime,
+          changedBy: adminLead._id,
+          notes: `Assigned to ${staff.name}`,
+        });
+        timeline.push({
+          eventType: 'ASSIGNED',
+          actor: adminLead._id,
+          actorName: adminLead.name,
+          actorRole: 'admin',
+          message: `Assigned to ${staff.name}`,
+          timestamp: assignedTime,
+        });
+      }
+
+      if (staff && (def.status === 'IN_PROGRESS' || def.status === 'RESOLVED')) {
+        const progressTime = new Date(def.createdAt.getTime() + 6 * 60 * 60 * 1000);
+        history.push({
+          status: 'IN_PROGRESS',
+          changedAt: progressTime,
+          changedBy: staff._id,
+          notes: 'Technician arrived on-site and commenced inspection.',
+        });
+        timeline.push({
+          eventType: 'STATUS_CHANGED',
+          actor: staff._id,
+          actorName: staff.name,
+          actorRole: 'staff',
+          message: 'Work commenced by technician',
+          timestamp: progressTime,
+        });
+      }
+
+      // SLA AT RISK event
+      if (baseSla.status === 'AT_RISK' || baseSla.atRiskNotified) {
+        timeline.push({
+          eventType: 'SLA_AT_RISK',
+          actorName: 'System Automation',
+          actorRole: 'system',
+          message: 'SLA resolution window at risk (<25% time remaining). Priority flagged.',
+          timestamp: new Date(def.createdAt.getTime() + Math.round(baseSla.resolutionTargetMinutes * 0.76 * 60 * 1000)),
+          metadata: { priority },
+        });
+      }
+
+      // SLA BREACHED event
+      if (baseSla.status === 'BREACHED' || baseSla.resolutionBreached) {
+        timeline.push({
+          eventType: 'SLA_BREACHED',
+          actorName: 'System Automation',
+          actorRole: 'system',
+          message: 'Target resolution deadline exceeded. SLA breach recorded.',
+          timestamp: baseSla.resolutionDeadline,
+          metadata: { priority },
+        });
+      }
+
+      // COMPLAINT ESCALATED event
+      if (baseSla.escalated) {
+        timeline.push({
+          eventType: 'COMPLAINT_ESCALATED',
+          actorName: 'System Automation',
+          actorRole: 'system',
+          message: `Complaint escalated to Level ${baseSla.escalationLevel} supervisory queue.`,
+          timestamp: baseSla.escalatedAt || baseSla.resolutionDeadline,
+          metadata: { escalationLevel: baseSla.escalationLevel },
+        });
+      }
+
+      if (def.status === 'RESOLVED') {
+        const resolvedTime = baseSla.resolutionAt || new Date(def.createdAt.getTime() + 10 * 60 * 60 * 1000);
+        history.push({
+          status: 'RESOLVED',
+          changedAt: resolvedTime,
+          changedBy: staff ? staff._id : adminLead._id,
+          notes: def.resolutionNotes || 'Work completed successfully.',
+        });
+        timeline.push({
+          eventType: 'RESOLVED',
+          actor: staff ? staff._id : adminLead._id,
+          actorName: staff ? staff.name : adminLead.name,
+          actorRole: staff ? 'staff' : 'admin',
+          message: def.resolutionNotes || 'Complaint resolved',
+          timestamp: resolvedTime,
+        });
+
+        timeline.push({
+          eventType: 'SLA_RESOLVED',
+          actor: staff ? staff._id : adminLead._id,
+          actorName: staff ? staff.name : adminLead.name,
+          actorRole: staff ? 'staff' : 'admin',
+          message: baseSla.resolutionBreached
+            ? 'Complaint resolved after SLA deadline (breached).'
+            : 'Complaint resolved within target SLA window.',
+          timestamp: resolvedTime,
+          metadata: { resolutionBreached: baseSla.resolutionBreached },
+        });
+
+        if (def.feedback) {
+          timeline.push({
+            eventType: 'FEEDBACK_SUBMITTED',
+            actor: student._id,
+            actorName: student.name,
+            actorRole: 'student',
+            message: `Student rated resolution ${def.feedback.rating}/5 stars`,
+            timestamp: new Date(resolvedTime.getTime() + 1 * 60 * 60 * 1000),
+          });
+        }
+      }
+
+      const complaintDoc = await Complaint.create({
+        title: def.title,
+        description: def.description,
+        category: def.category,
+        location: def.location,
+        priority,
+        prioritySource,
+        priorityReason,
+        priorityUpdatedAt: def.createdAt,
+        priorityUpdatedBy: prioritySource === 'MANUAL' ? adminLead._id : null,
+        sla: baseSla,
+        status: def.status || 'PENDING',
+        createdBy: student._id,
+        assignedTo: staff ? staff._id : null,
+        resolutionNotes: def.resolutionNotes || '',
+        statusHistory: history,
+        activityTimeline: timeline,
+        feedback: def.feedback
+          ? {
+              rating: def.feedback.rating,
+              comment: def.feedback.comment,
+              submittedAt: new Date(def.createdAt.getTime() + 11 * 60 * 60 * 1000),
+            }
+          : null,
+        createdAt: def.createdAt,
+        updatedAt: def.createdAt,
+      });
+
+      // Add a realistic discussion comment
+      if (staff) {
+        await Comment.create({
+          complaintId: complaintDoc._id,
+          userId: staff._id,
+          authorName: staff.name,
+          authorRole: 'staff',
+          text: `Maintenance ticket acknowledged. Spare parts requisitioned and on-site inspection scheduled.`,
+          createdAt: new Date(def.createdAt.getTime() + 5 * 60 * 60 * 1000),
+        });
+      }
+
+      // Add student notification
+      await Notification.create({
+        recipient: student._id,
+        type: def.status === 'RESOLVED' ? 'COMPLAINT_RESOLVED' : 'STATUS_CHANGED',
+        title: `Ticket Update: #${complaintDoc._id.toString().slice(-6)}`,
+        message: `Your complaint "${def.title}" is now ${complaintDoc.status}.`,
+        complaintId: complaintDoc._id,
+        read: def.status === 'RESOLVED',
+        createdAt: def.createdAt,
+      });
+
+      seededComplaintsCount++;
+    }
+
+    console.log(`[Seed] Successfully created ${seededComplaintsCount} complaints across all categories and lifecycle states!`);
+
+    console.log('\n======================================================');
+    console.log('       CAMPUSCARE 2.0 DEMONSTRATION DATA SEEDED       ');
+    console.log('======================================================');
+    console.log(`Admins: 2 | Staff Members: 8 | Students: ${students.length} | Complaints: ${seededComplaintsCount}`);
+    console.log('======================================================');
+    console.table([
+      { Role: 'ADMIN 1', Email: 'admin@manipal.edu', Password: ADMIN_PASSWORD, Desk: 'Admin Console' },
+      { Role: 'ADMIN 2', Email: 'campus.director@manipal.edu', Password: ADMIN_PASSWORD, Desk: 'Director Desk' },
+      { Role: 'STAFF LEAD', Email: 'staff@manipal.edu', Password: STAFF_PASSWORD, Area: 'Facilities Lead' },
+      { Role: 'ELECTRICAL', Email: 'staff.electrical@manipal.edu', Password: STAFF_PASSWORD, Area: 'Electrical & Power' },
+      { Role: 'PLUMBING', Email: 'staff.plumbing@manipal.edu', Password: STAFF_PASSWORD, Area: 'Plumbing & Water' },
+      { Role: 'CIVIL', Email: 'staff.civil@manipal.edu', Password: STAFF_PASSWORD, Area: 'Civil & Infrastructure' },
+      { Role: 'IT SUPPORT', Email: 'staff.it@manipal.edu', Password: STAFF_PASSWORD, Area: 'Network & Labs' },
+      { Role: 'CLEANING', Email: 'staff.cleaning@manipal.edu', Password: STAFF_PASSWORD, Area: 'Housekeeping' },
+      { Role: 'SECURITY', Email: 'staff.security@manipal.edu', Password: STAFF_PASSWORD, Area: 'Security & Access' },
+      { Role: 'FURNITURE', Email: 'staff.furniture@manipal.edu', Password: STAFF_PASSWORD, Area: 'Carpentry & Desks' },
+      { Role: 'STUDENT 1', Email: 'aarav.sharma@learner.manipal.edu', Password: STUDENT_PASSWORD, 'Registration Number': '235805401' },
+      { Role: 'STUDENT 2', Email: 'neha.patil@learner.manipal.edu', Password: STUDENT_PASSWORD, 'Registration Number': '235805402' },
+    ]);
+    console.log('======================================================\n');
+
+    await mongoose.disconnect();
+    process.exit(0);
+  } catch (error) {
+    console.error(`[Seed Error] Failed to seed data: ${error.message}`);
+    process.exit(1);
+  }
+};
+
+seedDemonstrationData();

@@ -1,0 +1,76 @@
+# Dependency directories
+node_modules/
+**/node_modules/
+
+# Environment variables & secrets
+.env
+.env.*
+.env.local
+.env.production
+!.env.example
+!**/.env.example
+
+# SSH and TLS Keys & Certificates
+*.pem
+*.key
+id_rsa
+id_rsa.pub
+id_ed25519
+id_ed25519.pub
+*.pub
+
+# Logs
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# Operating System files
+.DS_Store
+Thumbs.db
+
+# Build artifacts & coverage
+dist/
+build/
+coverage/
+**/dist/
+**/build/
+**/coverage/
+
+# IDE / Editor configuration
+.vscode/
+.idea/
+
+# Terraform (Infrastructure as Code)
+.terraform/
+*.tfstate
+*.tfstate.*
+*.tfvars
+*.tfvars.json
+!*.tfvars.example
+!**/*.tfvars.example
+
+# Planning and Internal Verification Artifacts
+PLAN.md
+VERIFICATION_REPORT.md
+DEMO_SCRIPT.md
+
+# Kubernetes & Helm Secrets
+*.secret.yaml
+*.secret.yml
+*secret*.local.yaml
+*secret*.local.yml
+values-secret.yaml
+values-secret.yml
+kubeconfig
+*.kubeconfig
+!k8s/secret.yaml
+
+# Uploads and temporary directories
+uploads/*
+**/uploads/*
+!**/uploads/.gitkeep
+tmp/
+**/tmp/
+k8s/secret.yaml
+helm/campuscare/templates/secret.yaml
