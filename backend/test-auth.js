@@ -39,23 +39,11 @@ async function runTests() {
   console.log('===============================================================\n');
 
   let mongod = null;
-  let mongoUri = process.env.MONGO_URI || 'mongodb://127.0.0.1:27017/campuscare';
-
-  // Test if local MongoDB is responsive
-  let connected = false;
-  try {
-    const testConn = await mongoose.connect(mongoUri, { serverSelectionTimeoutMS: 2000 });
-    connected = true;
-    console.log(`[Database] Connected to external MongoDB: ${mongoUri}`);
-  } catch (err) {
-    console.log(`[Database] Local/External MongoDB not accessible (${err.message}).`);
-    console.log(`[Database] Starting embedded MongoMemoryServer for verification...`);
-    const { MongoMemoryServer } = require('mongodb-memory-server');
-    mongod = await MongoMemoryServer.create();
-    mongoUri = mongod.getUri();
-    await mongoose.connect(mongoUri);
-    console.log(`[Database] Connected to MongoMemoryServer at: ${mongoUri}`);
-  }
+  const { MongoMemoryServer } = require('mongodb-memory-server');
+  mongod = await MongoMemoryServer.create();
+  const mongoUri = mongod.getUri();
+  await mongoose.connect(mongoUri);
+  console.log('[Database] Connected to isolated MongoMemoryServer');
 
   // Setup Express App
   const app = express();
